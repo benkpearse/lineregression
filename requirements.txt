@@ -3,5 +3,5 @@ pandas
 numpy
 matplotlib
 seaborn
-statsmodels
-scipy
+scipy==1.12.0
+statsmodels==0.14.1
