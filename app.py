@@ -102,13 +102,16 @@ def generate_power_curve_data(p_A: float, uplift: float, n_A: int, n_B: int,
     p_B = p_A * (1 + uplift)
     if p_B >= 1.0: return pd.DataFrame()
 
+    # Generate a range of sample sizes for the variant group
     variant_sample_sizes = np.linspace(100, n_B * 2, 100, dtype=int)
     
-    if traffic_split and traffic_split[1] > 0:
+    if traffic_split:
+        # For unequal splits, calculate the corresponding control group size
         control_ratio = traffic_split[0] / traffic_split[1]
         control_sample_sizes = (variant_sample_sizes * control_ratio).astype(int)
         powers = [calculate_power_frequentist(p_A, p_B, n_a, n_b, alpha, num_comparisons) for n_a, n_b in zip(control_sample_sizes, variant_sample_sizes)]
     else:
+        # For equal splits, control and variant sizes are the same
         powers = [calculate_power_frequentist(p_A, p_B, n, n, alpha, num_comparisons) for n in variant_sample_sizes]
     
     return pd.DataFrame({"variant_sample_size": variant_sample_sizes, "power": powers})
@@ -148,7 +151,6 @@ def prepare_geo_dataframe(
 st.title("⚙️ A/B/n Pre-Test Power Calculator")
 st.info("This tool helps you plan A/B tests by estimating the required users, duration, and cost to detect a target uplift with statistical confidence.")
 
-# --- Sidebar ---
 st.sidebar.button("Reset All Settings", on_click=reset_app_state, use_container_width=True, help="Click to clear all inputs and reset the app to its default state.")
 st.sidebar.markdown("---")
 
@@ -201,45 +203,29 @@ estimate_duration = st.sidebar.checkbox("Estimate Test Duration", value=True, ke
 if estimate_duration:
     weekly_traffic = st.sidebar.number_input("Total weekly traffic for test", 1, 20000, key='weekly_traffic', help="The total number of users available per week for this experiment.")
 
-force_geo = mode == "Find detectable uplift for fixed resources" and st.session_state.get('mde_source') == "Fixed Budget"
-st.sidebar.checkbox("Calculate Geo Spend & Cost", value=True, key='calculate_geo_spend', disabled=force_geo, help="Estimate the advertising spend based on regional CPMs.")
+st.sidebar.header("Geo Spend Configuration")
+force_geo = mode == "Find detectable uplift for fixed resources" and mde_source == "Fixed Budget"
+calculate_geo_spend = st.sidebar.checkbox("Calculate Geo Spend & Cost", value=True, key='calculate_geo_spend', disabled=force_geo, help="Estimate the advertising spend based on regional CPMs.")
 
-with st.sidebar.expander("Advanced Settings"):
-    max_sample_size = st.number_input("Max Sample Size Limit", 100_000, 10_000_000, 5_000_000, step=1_000_000, key='max_sample_size', help="The maximum sample size the calculator will search for to prevent very long run times.")
-
-# --- Geo Configuration (Main Panel) ---
-if st.session_state.get('calculate_geo_spend', False) or force_geo:
-    with st.expander("🌍 Geo Spend & Cost Configuration", expanded=True):
-        spend_mode = st.radio("Weighting Mode", ["Population-based", "Equal", "Custom"], index=0, horizontal=True, key='spend_mode', help="How to distribute the budget across regions. Population-based is proportional to default weights, Equal splits it evenly, Custom lets you define weights.")
+if calculate_geo_spend or force_geo:
+    spend_mode = st.sidebar.radio("Weighting Mode", ["Population-based", "Equal", "Custom"], index=0, horizontal=True, key='spend_mode', help="How to distribute the budget across regions. Population-based is proportional to default weights, Equal splits it evenly, Custom lets you define weights.")
+    with st.sidebar.expander("Configure Active Regions and Custom Data"):
         apply_to = st.radio("Apply region selection to:", ["Variant(s) only", "Both Control and Variant(s)"], horizontal=True, key='apply_to')
-        
-        st.markdown("##### Active Regions")
         with st.form("region_selection_form"):
-            cols = st.columns(4)
-            temp = []
-            for i, region in enumerate(ALL_REGIONS):
-                with cols[i % 4]:
-                    if st.checkbox(region, value=region in st.session_state.get('selected_regions', ALL_REGIONS), key=f"chk_{region}"):
-                        temp.append(region)
-            
+            temp = [region for i, region in enumerate(ALL_REGIONS) if st.checkbox(region, value=region in st.session_state.get('selected_regions', ALL_REGIONS), key=f"chk_{region}")]
             if st.form_submit_button("Confirm Regions"):
                 st.session_state.selected_regions = temp
                 st.session_state.custom_geo_df = GEO_DEFAULTS[GEO_DEFAULTS['Region'].isin(temp)].copy()
                 st.rerun()
-
-        if st.session_state.spend_mode == 'Custom':
-            st.markdown("##### Custom Region Weights & CPMs")
+        if spend_mode == 'Custom':
             if 'custom_geo_df' not in st.session_state:
                 st.session_state.custom_geo_df = GEO_DEFAULTS[GEO_DEFAULTS['Region'].isin(st.session_state.get('selected_regions', ALL_REGIONS))].copy()
-            
-            edited_df = st.data_editor(st.session_state.custom_geo_df, use_container_width=True, key='custom_geo_editor')
-            st.session_state.custom_geo_df = edited_df
-            
-            total_w = edited_df['Weight'].sum()
-            if not np.isclose(total_w, 1.0):
-                 st.warning(f"Custom weights should sum to 100%. Current sum: {total_w:.1%}")
-            else:
-                 st.success("Custom weights sum to 100%.")
+            edited = st.data_editor(st.session_state.custom_geo_df, use_container_width=True, key='custom_geo_editor')
+            st.session_state.custom_geo_df = edited
+            st.metric("Weight Sum", f"{edited['Weight'].sum():.1%}", delta=f"{edited['Weight'].sum()-1:.1%}")
+
+with st.sidebar.expander("Advanced Settings"):
+    max_sample_size = st.number_input("Max Sample Size Limit", 100_000, 10_000_000, 5_000_000, step=1_000_000, key='max_sample_size', help="The maximum sample size the calculator will search for to prevent very long run times.")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("Click below to run the calculation with the specified parameters.")
@@ -285,7 +271,7 @@ if st.session_state.submit:
         st.stop()
 
     total_spend = None
-    if st.session_state.get('calculate_geo_spend', False) or force_geo:
+    if st.session_state.calculate_geo_spend or force_geo:
         spend_mode = st.session_state.spend_mode
         apply_to = st.session_state.apply_to
         sel_regions = st.session_state.get('selected_regions', ALL_REGIONS)
@@ -355,14 +341,26 @@ if st.session_state.submit:
             st.pyplot(fig)
             st.caption("This chart shows the trade-off between the size of the effect you want to detect and the power of your test. Smaller uplifts require more statistical power (and thus more users) to be detected reliably.")
 
-    if st.session_state.get('calculate_geo_spend', False) or force_geo:
+    if st.session_state.calculate_geo_spend or force_geo:
         st.markdown("---")
         st.header("💰 Geo Spend & User Allocation")
-        
+        spend_mode = st.session_state.spend_mode
+        apply_to = st.session_state.apply_to
+        sel_regions = st.session_state.get('selected_regions', ALL_REGIONS)
+
         st.subheader("Control Group")
+        active_ctrl_regions = sel_regions if apply_to == 'Both Control and Variant(s)' else ALL_REGIONS
+        geo_ctrl = prepare_geo_dataframe(GEO_DEFAULTS, spend_mode, active_ctrl_regions)
+        geo_ctrl['Users'] = (geo_ctrl['Weight'] * req_n_A).astype(int)
+        geo_ctrl['Spend'] = (geo_ctrl['Weight'] * ctrl_spend).astype(float)
         st.dataframe(geo_ctrl[['Region', 'Weight', 'Users', 'Spend']].style.format({'Weight': '{:.1%}', 'Users': '{:,}', 'Spend': '£{:,.2f}'}), use_container_width=True)
 
         st.subheader("Variant Group")
+        active_var_regions = sel_regions if apply_to.startswith('Variant') else ALL_REGIONS
+        base_df_var = st.session_state.custom_geo_df if (spend_mode == 'Custom' and apply_to.startswith('Variant')) else GEO_DEFAULTS
+        geo_var = prepare_geo_dataframe(base_df_var, spend_mode, active_var_regions)
+        geo_var['Users'] = (geo_var['Weight'] * req_n_B).astype(int)
+        geo_var['Spend'] = (geo_var['Weight'] * var_spend).astype(float)
         st.dataframe(geo_var[['Region', 'Weight', 'Users', 'Spend']].style.format({'Weight': '{:.1%}', 'Users': '{:,}', 'Spend': '£{:,.2f}'}), use_container_width=True)
         
         st.subheader("Spend Comparison by Region")
@@ -378,4 +376,3 @@ if st.session_state.submit:
 
 else:
     st.info("👋 Welcome! Set your test parameters in the sidebar and click 'Run Calculation' to get started.")
-
