@@ -96,16 +96,25 @@ def calculate_mde_frequentist(p_A: float, n_A: int, n_B: int,
     return df
 
 @st.cache_data
-def generate_power_curve_data(p_A: float, uplift: float, n_per_group: int,
-                              alpha: float, num_comparisons: int) -> pd.DataFrame:
-    """Generates data for plotting Power vs. Sample Size."""
+def generate_power_curve_data(p_A: float, uplift: float, n_A: int, n_B: int,
+                              alpha: float, num_comparisons: int, traffic_split: List[float] = None) -> pd.DataFrame:
+    """Generates data for plotting Power vs. Sample Size, handling unequal splits."""
     p_B = p_A * (1 + uplift)
     if p_B >= 1.0: return pd.DataFrame()
+
+    # Generate a range of sample sizes for the variant group
+    variant_sample_sizes = np.linspace(100, n_B * 2, 100, dtype=int)
     
-    sample_sizes = np.linspace(100, n_per_group * 2, 100, dtype=int)
-    powers = [calculate_power_frequentist(p_A, p_B, n, n, alpha, num_comparisons) for n in sample_sizes]
+    if traffic_split:
+        # For unequal splits, calculate the corresponding control group size
+        control_ratio = traffic_split[0] / traffic_split[1]
+        control_sample_sizes = (variant_sample_sizes * control_ratio).astype(int)
+        powers = [calculate_power_frequentist(p_A, p_B, n_a, n_b, alpha, num_comparisons) for n_a, n_b in zip(control_sample_sizes, variant_sample_sizes)]
+    else:
+        # For equal splits, control and variant sizes are the same
+        powers = [calculate_power_frequentist(p_A, p_B, n, n, alpha, num_comparisons) for n in variant_sample_sizes]
     
-    return pd.DataFrame({"sample_size_per_group": sample_sizes, "power": powers})
+    return pd.DataFrame({"variant_sample_size": variant_sample_sizes, "power": powers})
 
 
 # --- Geo Testing Defaults & Helpers ---
@@ -292,19 +301,20 @@ if st.session_state.submit:
 
     if st.session_state.mode == "Find resources for a target uplift":
         st.subheader("Power vs. Sample Size")
-        power_curve_df = generate_power_curve_data(p_A, st.session_state.uplift, req_n_B, alpha, num_vars)
+        split_ratio = [st.session_state.pct_control / 100, (100 - st.session_state.pct_control) / 100] if use_unequal else None
+        power_curve_df = generate_power_curve_data(p_A, st.session_state.uplift, req_n_A, req_n_B, alpha, num_vars, split_ratio)
         if not power_curve_df.empty:
             fig, ax = plt.subplots()
-            ax.plot(power_curve_df['sample_size_per_group'], power_curve_df['power'], label='Power Curve')
+            ax.plot(power_curve_df['variant_sample_size'], power_curve_df['power'], label='Power Curve')
             ax.axhline(y=desired_power, color='r', linestyle='--', label=f'Desired Power ({desired_power:.0%})')
             ax.axvline(x=req_n_B, color='g', linestyle='--', label=f'Required Users ({req_n_B:,})')
             ax.set_title('How Power Increases with More Users')
-            ax.set_xlabel('Users per Group')
+            ax.set_xlabel('Users per Variant Group')
             ax.set_ylabel('Statistical Power')
             ax.legend()
             ax.grid(True, which='both', linestyle='--', linewidth=0.5)
             st.pyplot(fig)
-            st.caption("This chart shows how the probability of detecting a true effect (power) increases as more users are added to each group. The calculation recommends the sample size where the blue power curve crosses your desired power level (red line).")
+            st.caption("This chart shows how the probability of detecting a true effect (power) increases as more users are added to the variant group. The calculation recommends the sample size where the blue power curve crosses your desired power level (red line).")
 
     if st.session_state.mode == "Find detectable uplift for fixed resources":
         st.subheader("Minimum Detectable Effect (MDE) vs. Power")
